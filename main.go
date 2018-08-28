@@ -27,6 +27,9 @@ const (
 	goodLabel       = "1up/good"
 	badLabel        = "1up/bad"
 	quarantineLabel = "1up/quarantine"
+	classifiedLabel = "1up/classified"
+
+	modelFileName = "classifier.model"
 )
 
 var (
@@ -131,7 +134,7 @@ func main() {
 			logrus.Fatalf("Listing labels failed: %v", err)
 		}
 
-		var goodLabelID, badLabelID, quarantineLabelID, inboxLabelID string
+		var goodLabelID, badLabelID, quarantineLabelID, inboxLabelID, classifiedLabelID string
 
 		logrus.Infof("Processing %d labels...", len(l.Labels))
 		for _, label := range l.Labels {
@@ -144,9 +147,11 @@ func main() {
 				quarantineLabelID = label.Id
 			case inboxLabel:
 				inboxLabelID = label.Id
+			case classifiedLabel:
+				classifiedLabelID = label.Id
 			}
 
-			if len(goodLabelID) > 0 && len(badLabelID) > 0 && len(quarantineLabelID) > 0 && len(inboxLabelID) > 0 {
+			if len(goodLabelID) > 0 && len(badLabelID) > 0 && len(quarantineLabelID) > 0 && len(inboxLabelID) > 0 && len(classifiedLabelID) > 0 {
 				// We have everything we need so we can exit the loop.
 				break
 			}
@@ -182,21 +187,73 @@ func main() {
 			quarantineLabelID = label.Id
 		}
 
+		// If the classified label does not exist, create it.
+		if len(classifiedLabelID) <= 0 {
+			label, err := api.Users.Labels.Create(gmailUser, &gmail.Label{Name: classifiedLabel}).Do()
+			if err != nil {
+				logrus.Fatalf("Creating label %s failed: %v", quarantineLabel, err)
+			}
+			logrus.Infof("Created label %s", classifiedLabel)
+			classifiedLabelID = label.Id
+		}
+
+		// Build or load classifier
+		classifier, err := newClassifier(modelFileName)
+		if err != nil {
+			logrus.Fatalf("Build classifier failed: %v", err)
+		}
+
 		run := func() {
+			rgood, err := api.Users.Messages.List(gmailUser).LabelIds(goodLabelID).MaxResults(500).Do()
+			if err != nil {
+				logrus.Fatalf("Listing messages failed: %v", err)
+			}
+
+			logrus.Infof("Processing %d messages in %s...", len(rgood.Messages), goodLabel)
 			// Get the messages in the good and bad email labels.
-			goodEmails, err := getMessagesForLabel(api, goodLabelID, goodLabel)
+			goodEmails, err := getMessagesContent(api, rgood)
 			if err != nil {
 				logrus.Fatal(err)
 			}
-			badEmails, err := getMessagesForLabel(api, badLabelID, badLabel)
+
+			rbad, err := api.Users.Messages.List(gmailUser).LabelIds(badLabelID).MaxResults(500).Do()
+			if err != nil {
+				logrus.Fatalf("Listing messages failed: %v", err)
+			}
+			logrus.Infof("Processing %d messages in %s...", len(rbad.Messages), badLabel)
+			badEmails, err := getMessagesContent(api, rbad)
 			if err != nil {
 				logrus.Fatal(err)
 			}
 
 			// Train the classifier.
-			classifier, err := trainClassifier(goodEmails, badEmails)
+			err = classifier.trainClassifier(goodEmails, badEmails)
 			if err != nil {
-				logrus.Fatalf("Training classifier failed: %v", err)
+				logrus.Fatalf("Train classifier failed: %v", err)
+			}
+
+			for _, m := range rgood.Messages {
+				if _, err := api.Users.Messages.Modify(gmailUser, m.Id,
+					&gmail.ModifyMessageRequest{
+						// Add the quarantine label.
+						AddLabelIds: []string{classifiedLabelID},
+						// Remove the inbox label.
+						RemoveLabelIds: []string{goodLabelID},
+					}).Do(); err != nil {
+					logrus.Warnf("Adding labels to message %s failed: %v", m.Id, err)
+				}
+			}
+
+			for _, m := range rbad.Messages {
+				if _, err := api.Users.Messages.Modify(gmailUser, m.Id,
+					&gmail.ModifyMessageRequest{
+						// Add the quarantine label.
+						AddLabelIds: []string{classifiedLabelID},
+						// Remove the inbox label.
+						RemoveLabelIds: []string{badLabelID},
+					}).Do(); err != nil {
+					logrus.Warnf("Adding labels to message %s failed: %v", m.Id, err)
+				}
 			}
 
 			// Get the messages in the inbox.

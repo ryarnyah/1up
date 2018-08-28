@@ -94,9 +94,9 @@ func getMessageBody(msg *gmail.Message) (body string) {
 	// figuring out which are important and which are signatures, etc.
 	for k, part := range msg.Payload.Parts {
 		if part.Body != nil && len(part.Body.Data) > 0 {
-			b, err := base64.StdEncoding.DecodeString(part.Body.Data)
+			b, err := base64.URLEncoding.DecodeString(part.Body.Data)
 			if err != nil {
-				logrus.Debugf("Parsing base64 encoded body for message ID %s part %d failed: %v", msg.Id, k, err)
+				logrus.Debugf("Parsing base64 encoded body for message ID %+v part %d failed: %v", part.Body, k, err)
 				continue
 			}
 
@@ -107,20 +107,14 @@ func getMessageBody(msg *gmail.Message) (body string) {
 	return body
 }
 
-func getMessagesForLabel(api *gmail.Service, labelID, label string) ([]string, error) {
-	r, err := api.Users.Messages.List(gmailUser).LabelIds(labelID).MaxResults(500).Do()
-	if err != nil {
-		return nil, fmt.Errorf("Listing messages for label %s failed: %v", label, err)
-	}
-
+func getMessagesContent(api *gmail.Service, r *gmail.ListMessagesResponse) ([]string, error) {
 	messages := []string{}
 
-	logrus.Infof("Processing %d messages in %s...", len(r.Messages), label)
 	for _, m := range r.Messages {
 		// Get the message.
 		msg, err := api.Users.Messages.Get(gmailUser, m.Id).Format("full").Do()
 		if err != nil {
-			return nil, fmt.Errorf("Getting message %s in label %s failed: %v", m.Id, label, err)
+			return nil, fmt.Errorf("Getting message %s failed: %v", m.Id, err)
 		}
 
 		logrus.Debugf("snippet %s: %s", msg.Id, msg.Snippet)

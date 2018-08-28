@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	"github.com/jbrukh/bayesian"
 )
 
@@ -11,15 +13,22 @@ const (
 
 type classifier struct {
 	classifier *bayesian.Classifier
+	fileName   string
 }
 
-func trainClassifier(goodStuff, badStuff []string) (*classifier, error) {
-	c := bayesian.NewClassifier(good, bad)
+func newClassifier(fileName string) (*classifier, error) {
+	if _, err := os.Stat(fileName); os.IsNotExist(err) {
+		return &classifier{classifier: bayesian.NewClassifier(good, bad), fileName: fileName}, nil
+	}
+	c, err := bayesian.NewClassifierFromFile(fileName)
+	return &classifier{classifier: c, fileName: fileName}, err
+}
 
-	c.Learn(goodStuff, good)
-	c.Learn(badStuff, bad)
+func (c *classifier) trainClassifier(goodStuff, badStuff []string) error {
+	c.classifier.Learn(goodStuff, good)
+	c.classifier.Learn(badStuff, bad)
 
-	return &classifier{classifier: c}, nil
+	return c.classifier.WriteToFile(c.fileName)
 }
 
 func (c *classifier) classifyMessage(message string) ([]float64, []float64, bool, error) {
